@@ -34,3 +34,6 @@
 
 # Folders
 .vscode/
+
+# Other files
+*.txt
