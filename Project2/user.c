@@ -17,20 +17,22 @@
 
 int srv_fifo_fd;
 int user_fifo_fd;
-char *user_fifo;
+char *user_fifo = "";
 
 int user_id;
-char *pass = "";
+char pass[MAX_PASSWORD_LEN + 1];
 int delay;
-int op;
 char *arg = "";
-
 op_type_t op_type;
 
 req_header_t req_header;
 
 req_create_account_t req_create_account;
 req_transfer_t req_transfer;
+
+req_value_t req_value;
+
+tlv_request_t tlv_request;
 
 
 void openServerFIFO(){
@@ -65,51 +67,94 @@ void getUserFIFOName(){
 }
 
 void adminAcess(){
-    write(srv_fifo_fd, &user_id,sizeof(int));
-    write(srv_fifo_fd, pass, sizeof(char *) * strlen(pass));
-    if(op == 0){
-        write(srv_fifo_fd, arg, sizeof(char *) * strlen(arg));
+    if(op_type == OP_SHUTDOWN){
+        return;
     }
-    else if(op == 3){
+    else if(op_type == OP_CREATE_ACCOUNT){
+        char *token;
+        token = strtok(arg, " ");
+        req_create_account.account_id = atoi(token);
+        token = strtok(NULL, " ");
+        req_create_account.balance = atoi(token);
+        token = strtok(NULL, " ");
+        strcpy(req_create_account.password, token);
+
+        req_value.create = req_create_account;
+
+        return; 
     }
 }
 
 void userAcess(){
+    if(op_type == OP_BALANCE){
+        return;
+    }
+    else if(op_type == OP_TRANSFER){
+        char *token;
+        token = strtok(arg, " ");
+        req_transfer.account_id = atoi(token);
+        token = strtok(NULL, " ");
+        req_transfer.amount = atoi(token);
 
+        req_value.transfer = req_transfer;
+
+        return;
+    }
+}
+
+void fillReqStruct(){
+    req_header.account_id = user_id;
+    req_header.op_delay_ms = delay;
+    strcpy(req_header.password, pass);
+    req_header.pid = getpid();
+}
+
+void fillValueStruct(){
+    req_value.header = req_header;
+    
+}
+
+void fillTLVStruct(){
+    tlv_request.type = op_type;
+    tlv_request.value = req_value;
+    tlv_request.length = sizeof(req_value);
+}
+
+void processArgs(char *args[]){
+    user_id = atoi(args[1]);
+    if(user_id > MAX_BANK_ACCOUNTS){
+        printf("Numero maximo de contas ultrapassado, limite: %d", MAX_BANK_ACCOUNTS);
+        exit(2);
+    }
+    strcpy(pass, args[2]);
+    if(strlen(pass) < MIN_PASSWORD_LEN || strlen(pass) > MAX_PASSWORD_LEN){
+        printf("Insira uma password entre %d e %d\n", MIN_PASSWORD_LEN, MAX_PASSWORD_LEN);
+        exit(3);
+    }
+    delay = atoi(args[3]);
+    if(delay > MAX_OP_DELAY_MS){
+        printf("Atraso de operacao deve ser inferior a %d", MAX_OP_DELAY_MS);
+        exit(4);
+    }
+    op_type = atoi(args[4]);
+    if(op_type < 0 || op_type > 3){
+        printf("Codigo de operacao entre 0 e 3\n");
+        exit(5);
+    }
+    arg = args[5];
 }
 
 int main(int argc, char *argv[]){
-    if(argc < 5 || argc > 5){
+    if(argc != 6){
         printf("%s precisa de 5 argumentos\n", argv[0]);
         exit(1);
     }
 
     mode_t old_mask = umask(NEW_MASK);
 
-    user_id = atoi(argv[1]);
-    if(user_id > MAX_BANK_ACCOUNTS){
-        printf("Numero maximo de contas ultrapassado, limite: %d", MAX_BANK_ACCOUNTS);
-        exit(2);
-    }
-    pass = argv[2];
-    if(strlen(pass) < MIN_PASSWORD_LEN || strlen(pass) > MAX_PASSWORD_LEN){
-        printf("Insira uma password entre %s e %s\n", MIN_PASSWORD_LEN, MAX_PASSWORD_LEN);
-        exit(3);
-    }
-    delay = atoi(argv[3]);
-    if(delay > MAX_OP_DELAY_MS){
-        printf("Atraso de operacao deve ser inferior a %d", MAX_OP_DELAY_MS);
-        exit(4);
-    }
-    op_type = atoi(argv[4]);
-    if(op_type < 0 || op_type > 3){
-        printf("Codigo de operacao entre 0 e 3\n");
-        exit(5);
-    }
-    arg = argv[5];
+    processArgs(argv);
 
-    getUserFIFOName();
-
+    //getUserFIFOName();
 
     if(user_id == ADMIN_ACCOUNT_ID){
         adminAcess();
@@ -118,10 +163,18 @@ int main(int argc, char *argv[]){
         userAcess();
     }
 
+    fillReqStruct();
 
+    fillValueStruct();
 
+    fillTLVStruct();
+
+    logRequest(STDOUT_FILENO, getpid(), &tlv_request);
+
+    //write(srv_fifo_fd, &req_value, sizeof(req_value));
 
     umask(old_mask);
 
     return 0;
 }
+

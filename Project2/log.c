@@ -11,6 +11,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#define PIPE_BUF 4096
+
 static const char *OP_TYPE_STR[] = {
   [OP_CREATE_ACCOUNT] = "CREATE",
   [OP_BALANCE] = "BALANCE",
