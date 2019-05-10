@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <semaphore.h>
+#include <errno.h>
 
 #include "sope.h"
 
@@ -36,10 +37,6 @@ tlv_request_t tlv_request;
 
 
 void openServerFIFO(){
-    if(mkfifo(SERVER_FIFO_PATH, FIFO_RW_MODE) != 0){
-        printf("%s nao foi possivel abrir\n", SERVER_FIFO_PATH);
-        exit(1);
-    }
 
     srv_fifo_fd = open(SERVER_FIFO_PATH, O_WRONLY);
 }
@@ -50,7 +47,7 @@ void openUserFIFO(){
         exit(2);
     }
 
-    user_fifo_fd = open(user_fifo, O_RDONLY);
+    user_fifo_fd = open(user_fifo, O_RDONLY | O_NONBLOCK);
 }
 
 void getUserFIFOName(){
@@ -147,6 +144,7 @@ void processArgs(char *args[]){
 int main(int argc, char *argv[]){
     if(argc != 6){
         printf("%s precisa de 5 argumentos\n", argv[0]);
+        printf("Usage: %s <user_id> <user_pass> <op_delay> <op_type> <args_op>\n", argv[0]);
         exit(1);
     }
 
@@ -154,7 +152,7 @@ int main(int argc, char *argv[]){
 
     processArgs(argv);
 
-    //getUserFIFOName();
+    getUserFIFOName();
 
     if(user_id == ADMIN_ACCOUNT_ID){
         adminAcess();
@@ -171,7 +169,46 @@ int main(int argc, char *argv[]){
 
     logRequest(STDOUT_FILENO, getpid(), &tlv_request);
 
-    //write(srv_fifo_fd, &req_value, sizeof(req_value));
+    openServerFIFO();
+
+    write(srv_fifo_fd, &tlv_request, sizeof(tlv_request_t));
+    
+    openUserFIFO();
+
+    
+    tlv_reply_t *reply = (tlv_reply_t *)malloc(sizeof(tlv_reply_t));
+    int counter = 0;
+
+    while(counter < FIFO_TIMEOUT_SECS){
+        
+        if(read(user_fifo_fd, reply, sizeof(tlv_reply_t)) > 0){
+            break;
+        }
+        sleep(1);
+        counter++;
+    }
+
+    if(counter >= FIFO_TIMEOUT_SECS){
+
+        close(user_fifo_fd);
+
+        close(srv_fifo_fd);
+
+        unlink(user_fifo);
+
+        umask(old_mask);
+
+        return 1;
+    }
+    
+    
+    logReply(STDOUT_FILENO, reply->value.header.account_id, reply);
+    
+    close(user_fifo_fd);
+
+    //close(srv_fifo_fd);
+
+    unlink(user_fifo);
 
     umask(old_mask);
 
