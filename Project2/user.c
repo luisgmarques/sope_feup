@@ -37,17 +37,29 @@ tlv_request_t tlv_request;
 
 
 void openServerFIFO(){
-
-    srv_fifo_fd = open(SERVER_FIFO_PATH, O_WRONLY);
+    do{
+        srv_fifo_fd = open(SERVER_FIFO_PATH, O_WRONLY);
+        if(srv_fifo_fd == -1){
+            sleep(1);
+        }
+    }while(srv_fifo_fd == -1);  
 }
 
-void openUserFIFO(){
+void makeUserFIFO(){
     if(mkfifo(user_fifo, FIFO_RW_MODE) != 0){
         printf("%s nao foi possivel abrir\n", user_fifo);
         exit(2);
     }
+}
 
-    user_fifo_fd = open(user_fifo, O_RDONLY | O_NONBLOCK);
+void openUserFIFO(){
+    
+    do{
+        user_fifo_fd = open(user_fifo, O_RDONLY | O_NONBLOCK);
+        if(user_fifo_fd == -1){
+            sleep(1);
+        }
+    }while(user_fifo_fd == -1);
 }
 
 void getUserFIFOName(){
@@ -154,6 +166,8 @@ int main(int argc, char *argv[]){
 
     getUserFIFOName();
 
+    makeUserFIFO();
+
     if(user_id == ADMIN_ACCOUNT_ID){
         adminAcess();
     }
@@ -174,9 +188,9 @@ int main(int argc, char *argv[]){
     write(srv_fifo_fd, &tlv_request, sizeof(tlv_request_t));
     
     openUserFIFO();
-
     
     tlv_reply_t *reply = (tlv_reply_t *)malloc(sizeof(tlv_reply_t));
+    
     int counter = 0;
 
     while(counter < FIFO_TIMEOUT_SECS){
@@ -201,12 +215,11 @@ int main(int argc, char *argv[]){
         return 1;
     }
     
-    
-    logReply(STDOUT_FILENO, reply->value.header.account_id, reply);
+    logReply(STDOUT_FILENO, getpid(), reply);
     
     close(user_fifo_fd);
 
-    //close(srv_fifo_fd);
+    close(srv_fifo_fd);
 
     unlink(user_fifo);
 
@@ -214,4 +227,3 @@ int main(int argc, char *argv[]){
 
     return 0;
 }
-
