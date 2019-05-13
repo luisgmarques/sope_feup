@@ -16,7 +16,7 @@
 
 #include "sope.h"
 
-int srv_fifo_fd;
+int srv_fifo_fd = -1;
 int user_fifo_fd;
 char *user_fifo = "";
 
@@ -24,6 +24,9 @@ int user_id;
 char pass[MAX_PASSWORD_LEN + 1];
 int delay;
 char *arg = "";
+
+uint32_t length = 0;
+
 op_type_t op_type;
 
 req_header_t req_header;
@@ -39,6 +42,7 @@ tlv_request_t tlv_request;
 void openServerFIFO(){
     do{
         srv_fifo_fd = open(SERVER_FIFO_PATH, O_WRONLY);
+        //printf("%d", srv_fifo_fd);
         if(srv_fifo_fd == -1){
             sleep(1);
         }
@@ -90,6 +94,8 @@ void adminAcess(){
 
         req_value.create = req_create_account;
 
+        length += sizeof(req_create_account.account_id) + sizeof(req_create_account.balance) + strlen(req_create_account.password);
+
         return; 
     }
 }
@@ -107,6 +113,8 @@ void userAcess(){
 
         req_value.transfer = req_transfer;
 
+        length += sizeof(req_transfer.account_id) + sizeof(req_transfer.amount);
+
         return;
     }
 }
@@ -116,6 +124,8 @@ void fillReqStruct(){
     req_header.op_delay_ms = delay;
     strcpy(req_header.password, pass);
     req_header.pid = getpid();
+
+    length += sizeof(user_id) + sizeof(delay) + strlen(pass) + sizeof(req_header.pid);
 }
 
 void fillValueStruct(){
@@ -126,7 +136,8 @@ void fillValueStruct(){
 void fillTLVStruct(){
     tlv_request.type = op_type;
     tlv_request.value = req_value;
-    tlv_request.length = sizeof(req_value);
+    tlv_request.length = length;
+    
 }
 
 void processArgs(char *args[]){
@@ -181,9 +192,9 @@ int main(int argc, char *argv[]){
 
     fillTLVStruct();
 
-    logRequest(STDOUT_FILENO, getpid(), &tlv_request);
-
     openServerFIFO();
+
+    logRequest(STDOUT_FILENO, getpid(), &tlv_request);
 
     write(srv_fifo_fd, &tlv_request, sizeof(tlv_request_t));
     
