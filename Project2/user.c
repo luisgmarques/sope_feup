@@ -25,6 +25,8 @@ char pass[MAX_PASSWORD_LEN + 1];
 int delay;
 char *arg = "";
 
+int ulog;
+
 uint32_t length = 0;
 
 op_type_t op_type;
@@ -174,6 +176,9 @@ int main(int argc, char *argv[]){
     mode_t old_mask = umask(NEW_MASK);
 
     processArgs(argv);
+
+    ulog = open("ulog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
+    //dup2(ulog, STDOUT_FILENO);
 
     getUserFIFOName();
 

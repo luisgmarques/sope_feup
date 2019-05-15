@@ -15,26 +15,34 @@
 
 #include "sope.h"
 
-pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER; // Mutex
+pthread_mutex_t pedido_lock = PTHREAD_MUTEX_INITIALIZER; // Mutex
 pthread_mutex_t bank_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t pedido_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t empty_cond = PTHREAD_COND_INITIALIZER;
 
 sem_t sem1, sem2; // Semaforos
 int val1, val2; // valor dos semaforos
 
 bank_account_t bank_accounts[MAX_BANK_ACCOUNTS]; // Guarda as contas dos users
-int num_accounts; //numero de contas no banco
+int num_accounts = 0; //numero de contas no banco
 
 int srv_fifo_fd; // Descritor do fifo srv
 int user_fifo_fd; // Descritor do fifo user
 int fd_dummy;
 char *user_fifo = ""; // Nome do user fifo
 
-tlv_request_t buffer; // Buffer usado para comunicao entre Produtor e Consumidor
+tlv_request_t buffer[MAX_BANK_ACCOUNTS]; // Buffer usado para comunicao entre Produtor e Consumidor
+int bufin = 0;
+int bufout = 0;
 
 int num_threads; // Numero de banco eletronicos
 
 uint32_t length = 0;
+
+int pedidos = 0;
+
+int slog;
 
 static const char caracteres[] = "0123456789abcdef"; 
 
@@ -53,7 +61,9 @@ char *getSalt(){
 char *getHash(char *pass, char *salt){
     FILE *fp;
 
-    strcat(pass, salt);
+    char buf[MAX_PASSWORD_LEN];
+    strcpy(buf,pass);
+    strcat(buf, salt);
 
     char command[256];
     char *hash  = (char *) malloc(sizeof(char) * (HASH_LEN + 1));
@@ -116,9 +126,12 @@ void openUserFIFO(pid_t pid){
 }
 
 int login(uint32_t id, char *pass){
+    char buf[MAX_PASSWORD_LEN];
+    strcpy(buf,pass);
+
     for(int i = 0; i < num_accounts; i++){
         if(bank_accounts[i].account_id == id){
-            char *hash = getHash(pass, bank_accounts[i].salt);
+            char *hash = getHash(buf, bank_accounts[i].salt);
             if(strcmp(bank_accounts[i].hash, hash) != 0){
                 return 0;
             }
@@ -141,8 +154,25 @@ void processArgs(char *args[]){
     }
 }
 
+void put_request(tlv_request_t item)
+{
+    pthread_mutex_lock(&buffer_lock);
+    buffer[bufin] = item;
+    bufin = (bufin + 1) % MAX_BANK_ACCOUNTS;
+    pthread_mutex_unlock(&buffer_lock);
+    return;
+} 
+
+void get_request(tlv_request_t *itemp)
+{
+    pthread_mutex_lock(&buffer_lock);
+    *itemp = buffer[bufout];
+    bufout = (bufout + 1) % MAX_BANK_ACCOUNTS;
+    pthread_mutex_unlock(&buffer_lock);
+    return;
+} 
+
 int accountExists(uint32_t id){
-    //if(num_accounts > 0){
     pthread_mutex_lock(&bank_lock);
         for(int i = 0; i < num_accounts; i++){
             if(bank_accounts[i].account_id == id){
@@ -150,7 +180,6 @@ int accountExists(uint32_t id){
                 return 1; // TRUE
             }
         }
-    //}
     pthread_mutex_unlock(&bank_lock);
     return 0; // FALSE
 }
@@ -169,20 +198,18 @@ bank_account_t *getBankAccount(uint32_t id){
     return account;
 }
 
-void addAccount(bank_account_t *account){
+void addAccount(bank_account_t account){
     pthread_mutex_lock(&bank_lock);
-    bank_accounts[num_accounts] = *account;
+    bank_accounts[num_accounts] = account;
     num_accounts++;
     pthread_mutex_unlock(&bank_lock);
 }
 
 int createAccount(uint32_t account_id, uint32_t balance, char *pass){
-
-    printf("paramenter id %d\n", account_id);
-    printf("paramenter id %d\n", balance);
-    printf("paramenter id %s\n", pass);
      
     bank_account_t bank_account;
+
+    char * buf = pass;
     
     if(accountExists(account_id)){
         
@@ -197,25 +224,15 @@ int createAccount(uint32_t account_id, uint32_t balance, char *pass){
     char *salt = getSalt();
     strcpy(bank_account.salt, salt);
 
-    char *hash = getHash(pass, salt);
+    char *hash = getHash(buf, salt);
     strcpy(bank_account.hash, hash);
 
-    printf("deguf moode createa acount\n");
-
-    printf("id %d\n",bank_account.account_id);
-    printf("balance %d\n",bank_account.balance);
-    printf("salt %s\n",bank_account.salt);
-    printf("hash %s\n",bank_account.hash);
-
-    printf("end debug create account\n");
-
-    addAccount(&bank_account);
+    addAccount(bank_account);
     
     return RC_OK;
 }
 
 int transfer(uint32_t source_id, uint32_t balance, uint32_t dest_id){
-    
 
     if(!accountExists(source_id)){
         return RC_ID_NOT_FOUND;
@@ -262,48 +279,40 @@ void shutdown(){
 
 void *balcaoEletronico(void *num){
     logBankOfficeOpen(STDOUT_FILENO, *(int *) num, pthread_self());
-
+    
     while(1){
-
-        tlv_reply_t tlv_reply;
-
         sem_getvalue(&sem2, &val1);
-        logSyncMechSem(STDOUT_FILENO, *(int *) num, SYNC_OP_SEM_WAIT, SYNC_ROLE_CONSUMER, buffer.value.header.pid, val1);
         
         sem_wait(&sem2);
-        pthread_mutex_lock(&buffer_lock);
-        //logSyncMech(STDOUT_FILENO, *(int *) num, SYNC_OP_MUTEX_LOCK, SYNC_ROLE_ACCOUNT, buffer.value.header.pid);
-        //pthread_mutex_lock(&mut);
+        tlv_reply_t tlv_reply;
+        tlv_request_t request;
+        get_request(&request);
 
-        usleep(buffer.value.header.op_delay_ms * 1000);
+        logSyncMechSem(STDOUT_FILENO, *(int *) num, SYNC_OP_SEM_WAIT, SYNC_ROLE_CONSUMER, request.value.header.pid, val1);
 
-        tlv_reply.type = buffer.type;
-        printf("buffer operatio - %d\n", buffer.type);
-        printf("buffer operatio - %s\n", buffer.value.header.password);
-        printf("buffer operatio - %s\n", buffer.value.create.password);
+        usleep(request.value.header.op_delay_ms * 1000);
 
-        if(login(buffer.value.header.account_id, buffer.value.header.password)){
-            switch(buffer.type){
+        tlv_reply.type = request.type;
+        
+
+        if(login(request.value.header.account_id, request.value.header.password)){
+
+            switch(request.type){
 
                 /**     CREATE ACCOUNT      **/
 
                 case OP_CREATE_ACCOUNT:
-                printf("buffer operatio - %d\n", buffer.type);
-        printf("buffer operatio - %s\n", buffer.value.header.password);
-        printf("buffer operatio - %s\n", buffer.value.create.password);
-                printf("%d\n", buffer.value.create.balance);
-                if(buffer.value.header.account_id == 0){
-                    printf("%d\n", buffer.value.create.balance);
-                    int rc = createAccount(buffer.value.create.account_id, buffer.value.create.balance, buffer.value.create.password);
-                    tlv_reply.value.header.ret_code = rc;
-                    printf("%d\n", num_accounts);
-                    printf("%d\n", bank_accounts[num_accounts-1].balance);
+                if(request.value.header.account_id == 0){
+                                       
 
-                    printf("%d\n", (int)bank_accounts[num_accounts - 1].balance);
+                    int rc = createAccount(request.value.create.account_id, request.value.create.balance, request.value.create.password);
+                                        
+
+                    tlv_reply.value.header.ret_code = rc;
                     if(rc == RC_OK)
                         logAccountCreation(STDOUT_FILENO, *(int *) num, &bank_accounts[num_accounts - 1]);
                 }
-                else if(buffer.value.header.account_id > 0){
+                else if(request.value.header.account_id > 0){
                     tlv_reply.value.header.ret_code = RC_OP_NALLOW;
                 }
 
@@ -323,10 +332,10 @@ void *balcaoEletronico(void *num){
                 case OP_BALANCE:
 
                 tlv_reply.value.balance.balance = 0;
-                if(buffer.value.header.account_id > 0){
+                if(request.value.header.account_id > 0){
                     int i;
                     for(i = 0; i < num_accounts; i++){
-                        if(bank_accounts[i].account_id == buffer.value.header.account_id){
+                        if(bank_accounts[i].account_id == request.value.header.account_id){
                             break;
                         }
                     }
@@ -353,9 +362,9 @@ void *balcaoEletronico(void *num){
                 case OP_TRANSFER:
                 
                 tlv_reply.value.header.ret_code =
-                transfer(buffer.value.header.account_id, buffer.value.transfer.amount, buffer.value.transfer.account_id);
+                transfer(request.value.header.account_id, request.value.transfer.amount, request.value.transfer.account_id);
 
-                tlv_reply.value.transfer.balance = bank_accounts[buffer.value.header.account_id].balance;
+                tlv_reply.value.transfer.balance = bank_accounts[request.value.header.account_id].balance;
                 
                 break;
                 
@@ -372,12 +381,10 @@ void *balcaoEletronico(void *num){
             tlv_reply.value.header.account_id = *(int *)num;
             tlv_reply.value.header.ret_code = RC_LOGIN_FAIL;
         }
-        pthread_mutex_unlock(&buffer_lock);
-        //pthread_mutex_unlock(&mut);
-        //logSyncMech(STDOUT_FILENO, *(int *) num, SYNC_OP_MUTEX_UNLOCK, SYNC_ROLE_ACCOUNT, buffer.value.header.pid);
         logReply(STDOUT_FILENO, *(int *)num, &tlv_reply);
-
-        openUserFIFO(buffer.value.header.pid);
+        //pedidos--;
+        //pthread_cond_signal(&pedido_cond);
+        openUserFIFO(request.value.header.pid);
 
         write(user_fifo_fd, &tlv_reply, sizeof(tlv_reply_t));
         close(user_fifo_fd);
@@ -390,30 +397,6 @@ void *balcaoEletronico(void *num){
 
     logBankOfficeClose(STDOUT_FILENO, *(int *) num, pthread_self());
 
-    return NULL;
-}
-
-void *processPedidos(void *arg){
-    openServerFIFO();
-    
-
-    while(1){
-        tlv_request_t *request = (tlv_request_t *)malloc(sizeof(tlv_request_t));
-        sem_wait(&sem1);
-
-        if(read(srv_fifo_fd, request, sizeof(tlv_request_t)) > 0){
-            logRequest(STDOUT_FILENO, request->value.header.pid, request);
-            pthread_mutex_lock(&buffer_lock);
-            buffer = *request;
-            printf("buffer operatio - %d\n", buffer.type);
-        printf("buffer operatio - %s\n", buffer.value.header.password);
-        printf("buffer operatio - %s\n", buffer.value.create.password);
-                printf("%d\n", buffer.value.create.balance);
-            printf("processpedido - %d\n", buffer.value.create.account_id);
-            pthread_mutex_unlock(&buffer_lock);
-        }
-        sem_post(&sem2);
-    }
     return NULL;
 }
 
@@ -430,14 +413,14 @@ int main(int argc, char *argv[]){
 
     processArgs(argv);
 
+    slog = open("slog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
+    //dup2(slog, STDOUT_FILENO);
+
     makeServerFIFO();
-    
+
     pthread_t balcao[num_threads];
-    pthread_t pedidos;
 
     int thrarg[num_threads];
-
-    num_accounts = 0;
 
     sem_init(&sem1, 0, num_threads);
     sem_getvalue(&sem1, &val1);
@@ -455,29 +438,33 @@ int main(int argc, char *argv[]){
         }
     }
 
-    if(pthread_create(&pedidos, NULL, processPedidos, NULL) != 0){
-        perror("Nao foi possivel criar thread de pedidos\n");
-        exit(5);
-    }
-
     logSyncMech(STDOUT_FILENO, MAIN_THREAD_ID, SYNC_OP_MUTEX_LOCK, SYNC_ROLE_ACCOUNT, 0);
-    pthread_mutex_lock(&mut);
+    //pthread_mutex_lock(&mut);
     logDelay(STDOUT_FILENO, MAIN_THREAD_ID, 0);
     
     createAccount(ADMIN_ACCOUNT_ID, 0, argv[2]);
     //createAccount(1, 40, "oooooooooo");
     logAccountCreation(STDOUT_FILENO, MAIN_THREAD_ID, &bank_accounts[ADMIN_ACCOUNT_ID]);
     
-    pthread_mutex_unlock(&mut);
+    //pthread_mutex_unlock(&mut);
     logSyncMech(STDOUT_FILENO, MAIN_THREAD_ID, SYNC_OP_MUTEX_UNLOCK, SYNC_ROLE_ACCOUNT, 0);
+    openServerFIFO();
 
-    pthread_join(pedidos, NULL);
+    while(1){
+        
+        sem_wait(&sem1);
+        tlv_request_t request;
+        if(read(srv_fifo_fd, &request, sizeof(tlv_request_t)) > 0){
+            logRequest(STDOUT_FILENO, request.value.header.pid, &request);
+            put_request(request);
+            printf("%s\n", buffer[0].value.create.password);
+        }
+        sem_post(&sem2);
+    }
 
     for(int i = 0; i < num_threads; i++){
         pthread_join(balcao[i],NULL);
     }
-
-    
 
     close(srv_fifo_fd);
 
