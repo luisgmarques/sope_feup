@@ -1,8 +1,8 @@
-CC=gcc
-CFLAGS=-I.
+all: user.c server.c
+	 gcc -Wall user.c log.c -o user -D_REENTRANT -lpthread -lrt
+	 gcc -Wall server.c log.c -o server -D_REENTRANT -lpthread -lrt
 
-server: server.c log.c
-	$(CC) -Wall -o server server.c log.c -lpthread -lrt
-
-user: user.c log.c
-	$(CC) -Wall -o user user.c log.c -lpthread -lrt
+clean:
+	rm -f user
+	rm -f server
+	
