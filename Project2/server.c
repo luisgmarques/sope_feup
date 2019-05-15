@@ -15,6 +15,12 @@
 
 #include "sope.h"
 
+
+#define NEW_MASK 0000
+
+#define FIFO_RW_MODE 0777
+#define FIFO_READ_MODE 0444
+
 pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER; // Mutex
 pthread_mutex_t pedido_lock = PTHREAD_MUTEX_INITIALIZER; // Mutex
 pthread_mutex_t bank_lock = PTHREAD_MUTEX_INITIALIZER;

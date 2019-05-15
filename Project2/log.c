@@ -11,8 +11,6 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#define PIPE_BUF 4096
-
 static const char *OP_TYPE_STR[] = {
   [OP_CREATE_ACCOUNT] = "CREATE",
   [OP_BALANCE] = "BALANCE",
@@ -147,7 +145,8 @@ int logSyncDelay(int fd, int id, int sid, uint32_t delay_ms) {
  */
 
 static int atomicPrintf(int fd, const char *format, ...) {
-  static char buffer[PIPE_BUF];
+  //static char buffer[PIPE_BUF]; // replaced
+  char buffer[PIPE_BUF];
   va_list args;
   int ret;
 

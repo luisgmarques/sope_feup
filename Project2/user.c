@@ -16,6 +16,11 @@
 
 #include "sope.h"
 
+#define NEW_MASK 0000
+
+#define FIFO_RW_MODE 0777 // FIFO read and write
+#define FIFO_READ_MODE 0444 // FIFO read only
+
 int srv_fifo_fd = -1;
 int user_fifo_fd;
 char *user_fifo = "";
@@ -47,7 +52,7 @@ int openServerFIFO(){
     if(srv_fifo_fd == -1){
         return -1;
     }
-    return 0;
+    return 0; 
 }
 
 void makeUserFIFO(){
@@ -126,19 +131,17 @@ void fillReqStruct(){
     strcpy(req_header.password, pass);
     req_header.pid = getpid();
 
-    length += sizeof(user_id) + sizeof(delay) + strlen(pass) + sizeof(req_header.pid);
+    length += sizeof(req_header.account_id) + sizeof(req_header.op_delay_ms) + strlen(req_header.password) + sizeof(req_header.pid);
 }
 
 void fillValueStruct(){
     req_value.header = req_header;
-    
 }
 
 void fillTLVStruct(){
     tlv_request.type = op_type;
     tlv_request.value = req_value;
     tlv_request.length = length;
-    
 }
 
 void processArgs(char *args[]){
@@ -172,6 +175,8 @@ int main(int argc, char *argv[]){
         exit(1);
     }
 
+    tlv_reply_t *reply = (tlv_reply_t *)malloc(sizeof(tlv_reply_t));
+
     mode_t old_mask = umask(NEW_MASK);
 
     processArgs(argv);
@@ -179,10 +184,7 @@ int main(int argc, char *argv[]){
     ulog = open("ulog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
     //dup2(ulog, STDOUT_FILENO);
 
-    if(openServerFIFO() != 0){
-
-        exit(-1);
-    }
+    
 
     getUserFIFOName();
 
@@ -203,11 +205,19 @@ int main(int argc, char *argv[]){
 
     logRequest(STDOUT_FILENO, getpid(), &tlv_request);
 
+    if(openServerFIFO() != 0){
+        reply->length = sizeof(op_type_t) + sizeof(ret_code_t);
+        reply->type = op_type;
+        reply->value.header.ret_code = RC_SRV_DOWN;
+        
+        logReply(STDOUT_FILENO, getpid(), reply);
+        
+        return -1;
+    }
+
     write(srv_fifo_fd, &tlv_request, sizeof(tlv_request_t));
     
     openUserFIFO();
-    
-    tlv_reply_t *reply = (tlv_reply_t *)malloc(sizeof(tlv_reply_t));
     
     int counter = 0;
 
@@ -221,6 +231,11 @@ int main(int argc, char *argv[]){
     }
 
     if(counter >= FIFO_TIMEOUT_SECS){
+        reply->length = sizeof(op_type_t) + sizeof(ret_code_t);
+        reply->type = op_type;
+        reply->value.header.ret_code = RC_SRV_TIMEOUT;
+        
+        logReply(STDOUT_FILENO, getpid(), reply);
 
         close(user_fifo_fd);
 

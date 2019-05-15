@@ -1,6 +1,0 @@
-E - 09886 - [ 42 bytes] 09886 (0000, "passwordfalsa")        [   10 ms] CREATE   0003         30€ "ppppppppp"
-R - 09886 - [  0 bytes] 0001   CREATE    ID_IN_USE
-9886
-E - 09903 - [ 42 bytes] 09903 (0000, "passwordfalsa")        [   10 ms] CREATE   0003         30€ "ppppppppp"
-R - 09903 - [  0 bytes] 0001   CREATE    ID_IN_USE
-9903
