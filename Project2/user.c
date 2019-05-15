@@ -41,14 +41,13 @@ req_value_t req_value;
 tlv_request_t tlv_request;
 
 
-void openServerFIFO(){
-    do{
-        srv_fifo_fd = open(SERVER_FIFO_PATH, O_WRONLY);
-        //printf("%d", srv_fifo_fd);
-        if(srv_fifo_fd == -1){
-            sleep(1);
-        }
-    }while(srv_fifo_fd == -1);  
+int openServerFIFO(){
+    
+    srv_fifo_fd = open(SERVER_FIFO_PATH, O_WRONLY);
+    if(srv_fifo_fd == -1){
+        return -1;
+    }
+    return 0;
 }
 
 void makeUserFIFO(){
@@ -180,6 +179,11 @@ int main(int argc, char *argv[]){
     ulog = open("ulog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
     //dup2(ulog, STDOUT_FILENO);
 
+    if(openServerFIFO() != 0){
+
+        exit(-1);
+    }
+
     getUserFIFOName();
 
     makeUserFIFO();
@@ -196,8 +200,6 @@ int main(int argc, char *argv[]){
     fillValueStruct();
 
     fillTLVStruct();
-
-    openServerFIFO();
 
     logRequest(STDOUT_FILENO, getpid(), &tlv_request);
 

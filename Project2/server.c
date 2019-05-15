@@ -15,11 +15,13 @@
 
 #include "sope.h"
 
+pthread_mutex_t mut = PTHREAD_MUTEX_INITIALIZER; // Mutex
 pthread_mutex_t pedido_lock = PTHREAD_MUTEX_INITIALIZER; // Mutex
 pthread_mutex_t bank_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t buffer_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t pedido_cond = PTHREAD_COND_INITIALIZER;
 pthread_cond_t empty_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 sem_t sem1, sem2; // Semaforos
 int val1, val2; // valor dos semaforos
@@ -38,11 +40,11 @@ int bufout = 0;
 
 int num_threads; // Numero de banco eletronicos
 
-uint32_t length = 0;
+int length = 0;
 
-int pedidos = 0;
+int slog; // fd 
 
-int slog;
+int is_open = 1;
 
 static const char caracteres[] = "0123456789abcdef"; 
 
@@ -101,14 +103,13 @@ void openServerFIFO(){
             sleep(1);
         }
     }while(srv_fifo_fd == -1);
-
     
 
     fd_dummy = open(SERVER_FIFO_PATH, O_WRONLY);
     
 }
 
-void openUserFIFO(pid_t pid){
+int openUserFIFO(pid_t pid){
     char *buf = malloc(sizeof(WIDTH_ID + 1));
     sprintf(buf, "%*d", WIDTH_ID, pid);
 
@@ -116,13 +117,13 @@ void openUserFIFO(pid_t pid){
 
     strcpy(user_fifo, USER_FIFO_PATH_PREFIX);
     strcat(user_fifo, buf);
-    do{
-        user_fifo_fd = open(user_fifo, O_WRONLY);
-        if(user_fifo_fd == -1){
-            sleep(1);
-        }
-    }while(user_fifo_fd == -1);
     
+    user_fifo_fd = open(user_fifo, O_WRONLY);
+    if(user_fifo_fd == -1){
+        return -1;
+    }
+
+    return 0;
 }
 
 int login(uint32_t id, char *pass){
@@ -154,8 +155,7 @@ void processArgs(char *args[]){
     }
 }
 
-void put_request(tlv_request_t item)
-{
+void put_request(tlv_request_t item){
     pthread_mutex_lock(&buffer_lock);
     buffer[bufin] = item;
     bufin = (bufin + 1) % MAX_BANK_ACCOUNTS;
@@ -163,8 +163,7 @@ void put_request(tlv_request_t item)
     return;
 } 
 
-void get_request(tlv_request_t *itemp)
-{
+void get_request(tlv_request_t *itemp){
     pthread_mutex_lock(&buffer_lock);
     *itemp = buffer[bufout];
     bufout = (bufout + 1) % MAX_BANK_ACCOUNTS;
@@ -232,7 +231,7 @@ int createAccount(uint32_t account_id, uint32_t balance, char *pass){
     return RC_OK;
 }
 
-int transfer(uint32_t source_id, uint32_t balance, uint32_t dest_id){
+int transfer(uint32_t source_id, uint32_t balance, uint32_t dest_id, uint32_t delay){
 
     if(!accountExists(source_id)){
         return RC_ID_NOT_FOUND;
@@ -245,7 +244,10 @@ int transfer(uint32_t source_id, uint32_t balance, uint32_t dest_id){
     bank_account_t *b_s, *b_d;
     b_s = getBankAccount(source_id);
     b_d = getBankAccount(dest_id);
-
+    if(b_d == NULL){
+        return RC_OTHER;
+    }
+    usleep(delay);
     if(b_s->balance < balance){
         return RC_NO_FUNDS;
     }
@@ -273,46 +275,46 @@ int getBalance(uint32_t account_id){
 }
 
 void shutdown(){
-    fchmod(srv_fifo_fd, FIFO_READ_ONLY);
+    if(fchmod(srv_fifo_fd, FIFO_READ_MODE) != 0){
+        printf("Nao foi possivel fechar o FIFO %s\n", SERVER_FIFO_PATH);
+        exit(4);
+    }
+    is_open = 0;
 }
 
 
 void *balcaoEletronico(void *num){
+
     logBankOfficeOpen(STDOUT_FILENO, *(int *) num, pthread_self());
     
-    while(1){
-        sem_getvalue(&sem2, &val1);
+    while(is_open) {
         
+        sem_getvalue(&sem2, &val1);
+        logSyncMechSem(STDOUT_FILENO, *(int *) num, SYNC_OP_SEM_WAIT, SYNC_ROLE_CONSUMER, 0, val1);
         sem_wait(&sem2);
         tlv_reply_t tlv_reply;
         tlv_request_t request;
         get_request(&request);
 
-        logSyncMechSem(STDOUT_FILENO, *(int *) num, SYNC_OP_SEM_WAIT, SYNC_ROLE_CONSUMER, request.value.header.pid, val1);
-
-        usleep(request.value.header.op_delay_ms * 1000);
-
         tlv_reply.type = request.type;
-        
 
         if(login(request.value.header.account_id, request.value.header.password)){
 
             switch(request.type){
 
+
                 /**     CREATE ACCOUNT      **/
 
                 case OP_CREATE_ACCOUNT:
-                if(request.value.header.account_id == 0){
-                                       
-
+                usleep(request.value.header.op_delay_ms * 1000);
+                length += sizeof(int) + sizeof(int);
+                if(request.value.header.account_id == ADMIN_ACCOUNT_ID){
                     int rc = createAccount(request.value.create.account_id, request.value.create.balance, request.value.create.password);
-                                        
-
                     tlv_reply.value.header.ret_code = rc;
                     if(rc == RC_OK)
                         logAccountCreation(STDOUT_FILENO, *(int *) num, &bank_accounts[num_accounts - 1]);
                 }
-                else if(request.value.header.account_id > 0){
+                else if(request.value.header.account_id != ADMIN_ACCOUNT_ID){
                     tlv_reply.value.header.ret_code = RC_OP_NALLOW;
                 }
 
@@ -322,7 +324,6 @@ void *balcaoEletronico(void *num){
 
                 tlv_reply.value.header.account_id = *(int *)num;
                 length += sizeof(*(int *)num) + sizeof(tlv_reply.value.header.ret_code);
-                
 
                 break;
 
@@ -330,69 +331,103 @@ void *balcaoEletronico(void *num){
                 /**     CHECK BALANCE       **/
 
                 case OP_BALANCE:
+                usleep(request.value.header.op_delay_ms * 1000);
+                length += sizeof(int) + sizeof(int);
+                //tlv_reply.value.balance.balance = 0;
 
-                tlv_reply.value.balance.balance = 0;
-                if(request.value.header.account_id > 0){
-                    int i;
-                    for(i = 0; i < num_accounts; i++){
-                        if(bank_accounts[i].account_id == request.value.header.account_id){
-                            break;
-                        }
-                    }
-
-                    if(i < num_accounts){
-                        tlv_reply.value.balance.balance = bank_accounts[i].balance;
-                    }
+                if(request.value.header.account_id != ADMIN_ACCOUNT_ID){
+                    tlv_reply.value.balance.balance = getBalance(request.value.header.account_id);   
+                    length += sizeof(int);
                 }
-                else{
+
+                
+                else if(request.value.header.account_id == ADMIN_ACCOUNT_ID){
                     tlv_reply.value.header.ret_code = RC_OP_NALLOW;
                 }
+                else{
+                    tlv_reply.value.header.ret_code = RC_OTHER;
+                }
+
                 break;
+
 
                 /**     SERVER SHUTDOWN     **/
 
                 case OP_SHUTDOWN:
+                usleep(request.value.header.op_delay_ms * 1000);
+                length += sizeof(request.value.header.account_id) + sizeof(int);
 
-                shutdown();
+                if(request.value.header.account_id == ADMIN_ACCOUNT_ID){
+                    shutdown();
+                    tlv_reply.value.header.ret_code = RC_OK;
+                    tlv_reply.value.shutdown.active_offices = bufin - bufout;
+                    length += sizeof(int);
+                }
 
+                else if(request.value.header.account_id != ADMIN_ACCOUNT_ID){
+                    tlv_reply.value.header.ret_code = RC_OP_NALLOW;
+                }
+
+                else{
+                    tlv_reply.value.header.ret_code = RC_OTHER;
+                }
+                
                 break;
+
 
                 /**     TRANSFERENCIA       **/
 
                 case OP_TRANSFER:
-                
-                tlv_reply.value.header.ret_code =
-                transfer(request.value.header.account_id, request.value.transfer.amount, request.value.transfer.account_id);
+                length += sizeof(int) + sizeof(int);
+                if(request.value.header.account_id == ADMIN_ACCOUNT_ID){
+                    tlv_reply.value.header.ret_code = RC_OP_NALLOW;
+                }
 
-                tlv_reply.value.transfer.balance = bank_accounts[request.value.header.account_id].balance;
-                
+                else if(request.value.header.account_id != ADMIN_ACCOUNT_ID){
+                    tlv_reply.value.header.ret_code =
+                    transfer(request.value.header.account_id, request.value.transfer.amount, request.value.transfer.account_id, request.value.header.op_delay_ms * 1000);
+                    length += sizeof(request.value.transfer.amount);
+                }
+                else{
+                    tlv_reply.value.header.ret_code = RC_OTHER;
+                }
+
+                bank_account_t *account = getBankAccount(request.value.header.account_id);
+                tlv_reply.value.transfer.balance = (*account).balance;
+
                 break;
                 
-
-
                 /**     DEFAULT     **/
 
                 default:
                 break;
             }
         }
+
         else{
-            
+            length += 2*sizeof(int);
             tlv_reply.value.header.account_id = *(int *)num;
             tlv_reply.value.header.ret_code = RC_LOGIN_FAIL;
         }
-        logReply(STDOUT_FILENO, *(int *)num, &tlv_reply);
-        //pedidos--;
-        //pthread_cond_signal(&pedido_cond);
-        openUserFIFO(request.value.header.pid);
 
-        write(user_fifo_fd, &tlv_reply, sizeof(tlv_reply_t));
+        tlv_reply.length = length;
+        
+        if(openUserFIFO(request.value.header.pid) != 0){
+            tlv_reply.value.header.ret_code = RC_USR_DOWN;
+        }
+        else{
+            write(user_fifo_fd, &tlv_reply, sizeof(tlv_reply_t));
+
+        }
+
+        logReply(STDOUT_FILENO, *(int *)num, &tlv_reply);
+
         close(user_fifo_fd);
-        
+        length = 0;
+
         sem_post(&sem1);
-        
         sem_getvalue(&sem1, &val2);
-        logSyncMechSem(STDOUT_FILENO, *(int *) num, SYNC_OP_SEM_POST, SYNC_ROLE_CONSUMER, 0, val2);
+        logSyncMechSem(STDOUT_FILENO, *(int *) num, SYNC_OP_SEM_POST, SYNC_ROLE_CONSUMER, request.value.header.pid, val2);
     }
 
     logBankOfficeClose(STDOUT_FILENO, *(int *) num, pthread_self());
@@ -400,9 +435,16 @@ void *balcaoEletronico(void *num){
     return NULL;
 }
 
+void destroy(){
+    pthread_mutex_destroy(&mut);
+    pthread_mutex_destroy(&pedido_lock);
+    pthread_mutex_destroy(&bank_lock);
+    pthread_mutex_destroy(&buffer_lock);
+}
+
 int main(int argc, char *argv[]){
     if(argc != 3){
-        printf("%s precisa de 2 argumentos", argv[0]);
+        printf("%s precisa de 2 argumentos\n", argv[0]);
         printf("Usage: %s <num_balcoes> <admin_pass>\n", argv[0]);
         exit(1);
     }
@@ -414,13 +456,13 @@ int main(int argc, char *argv[]){
     processArgs(argv);
 
     slog = open("slog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
-    //dup2(slog, STDOUT_FILENO);
+    //dup2(slog, STDOUT_FILENO); // Output redirecionado para <file.txt>
 
-    makeServerFIFO();
+    
 
-    pthread_t balcao[num_threads];
+    pthread_t balcao[num_threads]; //
 
-    int thrarg[num_threads];
+    int thrarg[num_threads]; // numero do balcao correspondente
 
     sem_init(&sem1, 0, num_threads);
     sem_getvalue(&sem1, &val1);
@@ -439,36 +481,61 @@ int main(int argc, char *argv[]){
     }
 
     logSyncMech(STDOUT_FILENO, MAIN_THREAD_ID, SYNC_OP_MUTEX_LOCK, SYNC_ROLE_ACCOUNT, 0);
-    //pthread_mutex_lock(&mut);
+    pthread_mutex_lock(&mut);
     logDelay(STDOUT_FILENO, MAIN_THREAD_ID, 0);
     
     createAccount(ADMIN_ACCOUNT_ID, 0, argv[2]);
-    //createAccount(1, 40, "oooooooooo");
+
     logAccountCreation(STDOUT_FILENO, MAIN_THREAD_ID, &bank_accounts[ADMIN_ACCOUNT_ID]);
     
-    //pthread_mutex_unlock(&mut);
+    pthread_mutex_unlock(&mut);
     logSyncMech(STDOUT_FILENO, MAIN_THREAD_ID, SYNC_OP_MUTEX_UNLOCK, SYNC_ROLE_ACCOUNT, 0);
+    
+    makeServerFIFO();
     openServerFIFO();
-
-    while(1){
-        
-        sem_wait(&sem1);
+    
+    // ==== Le pedidos de user até o FIFO SRV estiver aberto para escrita =====
+    while(is_open){
         tlv_request_t request;
+
         if(read(srv_fifo_fd, &request, sizeof(tlv_request_t)) > 0){
+            sem_getvalue(&sem1, &val1);
+            logSyncMechSem(STDOUT_FILENO, MAIN_THREAD_ID, SYNC_OP_SEM_WAIT, SYNC_ROLE_PRODUCER, request.value.header.pid, val1);
+            sem_wait(&sem1);
             logRequest(STDOUT_FILENO, request.value.header.pid, &request);
             put_request(request);
-            printf("%s\n", buffer[0].value.create.password);
+            
+            sem_post(&sem2);
+            sem_getvalue(&sem2,&val2);
+            logSyncMechSem(STDOUT_FILENO, MAIN_THREAD_ID, SYNC_OP_SEM_POST, SYNC_ROLE_PRODUCER, request.value.header.pid, val2);
         }
-        sem_post(&sem2);
+
+        if(request.type == OP_SHUTDOWN){
+            break;
+        }
     }
+    // =======================================================================
+
+
+    // ====== Espera pelos balcoes encerrarem =======
 
     for(int i = 0; i < num_threads; i++){
         pthread_join(balcao[i],NULL);
     }
 
+    // ==============================================
+
+
+
+    // ======== Fecha e apaga FIFO SRV ==============
+
     close(srv_fifo_fd);
 
     unlink(SERVER_FIFO_PATH);
+
+    // ==============================================
+
+    destroy();
 
     umask(old_mask);
 

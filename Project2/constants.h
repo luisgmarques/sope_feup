@@ -36,4 +36,4 @@
 #define NEW_MASK 0000
 
 #define FIFO_RW_MODE 0777
-#define FIFO_READ_ONLY 0444
+#define FIFO_READ_MODE 0444
