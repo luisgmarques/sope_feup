@@ -21,7 +21,9 @@
 #define FIFO_RW_MODE 0777 // FIFO read and write
 #define FIFO_READ_MODE 0444 // FIFO read only
 
-int srv_fifo_fd = -1;
+#define MAX_FD 1024
+
+int srv_fifo_fd;
 int user_fifo_fd;
 char *user_fifo = "";
 
@@ -65,7 +67,7 @@ void makeUserFIFO(){
 void openUserFIFO(){
     
     do{
-        user_fifo_fd = open(user_fifo, O_RDONLY | O_NONBLOCK);
+        user_fifo_fd = open(user_fifo, O_RDONLY);
         if(user_fifo_fd == -1){
             sleep(1);
         }
@@ -174,6 +176,7 @@ int main(int argc, char *argv[]){
         printf("Usage: %s <user_id> <user_pass> <op_delay> <op_type> <args_op>\n", argv[0]);
         exit(1);
     }
+    //printf("%d\n", srv_fifo_fd);
 
     tlv_reply_t *reply = (tlv_reply_t *)malloc(sizeof(tlv_reply_t));
 
@@ -183,8 +186,6 @@ int main(int argc, char *argv[]){
 
     ulog = open("ulog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
     //dup2(ulog, STDOUT_FILENO);
-
-    
 
     getUserFIFOName();
 
@@ -216,16 +217,16 @@ int main(int argc, char *argv[]){
     }
 
     write(srv_fifo_fd, &tlv_request, sizeof(tlv_request_t));
-    
+
     openUserFIFO();
-    
+
     int counter = 0;
 
     while(counter < FIFO_TIMEOUT_SECS){
-        
         if(read(user_fifo_fd, reply, sizeof(tlv_reply_t)) > 0){
             break;
         }
+
         sleep(1);
         counter++;
     }
@@ -239,8 +240,6 @@ int main(int argc, char *argv[]){
 
         close(user_fifo_fd);
 
-        close(srv_fifo_fd);
-
         unlink(user_fifo);
 
         umask(old_mask);
@@ -249,6 +248,8 @@ int main(int argc, char *argv[]){
     }
     
     logReply(STDOUT_FILENO, getpid(), reply);
+
+    free(reply);
     
     close(user_fifo_fd);
 
