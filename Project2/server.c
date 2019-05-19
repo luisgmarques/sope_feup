@@ -300,7 +300,7 @@ void shutdown(){
         exit(4);
     }
     
-    is_open = 0; // <-- FALSE
+    is_open = 0; // <-- balcoes sao encerrados
 
     for(int i = 1; i < num_threads; i++)
         sem_post(&sem); // Sinal enviado aos balcoes para encerrarem
