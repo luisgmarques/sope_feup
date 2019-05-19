@@ -59,15 +59,24 @@ int openServerFIFO(){
 
 void makeUserFIFO(){
     if(mkfifo(user_fifo, FIFO_RW_MODE) != 0){
-        printf("%s nao foi possivel abrir\n", user_fifo);
+        if(errno == EEXIST){
+            printf("USER FIFO - %s - ja existe !\n", user_fifo);
+        }
+        else{
+            printf("%s nao foi possivel criar.\n", user_fifo);
+        }
+
+        printf("%s foi eliminado.\n", user_fifo);
+        printf("Saindo... \n");
+
+        unlink(user_fifo);
         exit(2);
     }
 }
 
 void openUserFIFO(){
-    
     do{
-        user_fifo_fd = open(user_fifo, O_RDONLY);
+        user_fifo_fd = open(user_fifo, O_RDONLY | O_NONBLOCK);
         if(user_fifo_fd == -1){
             sleep(1);
         }
@@ -176,7 +185,6 @@ int main(int argc, char *argv[]){
         printf("Usage: %s <user_id> <user_pass> <op_delay> <op_type> <args_op>\n", argv[0]);
         exit(1);
     }
-    //printf("%d\n", srv_fifo_fd);
 
     tlv_reply_t *reply = (tlv_reply_t *)malloc(sizeof(tlv_reply_t));
 
@@ -184,8 +192,7 @@ int main(int argc, char *argv[]){
 
     processArgs(argv);
 
-    ulog = open("ulog.txt", O_WRONLY | O_APPEND | O_CREAT, 0777);
-    //dup2(ulog, STDOUT_FILENO);
+    ulog = open("ulog.txt", O_WRONLY | O_APPEND |O_CREAT, 0777);
 
     getUserFIFOName();
 
@@ -204,15 +211,15 @@ int main(int argc, char *argv[]){
 
     fillTLVStruct();
 
-    logRequest(STDOUT_FILENO, getpid(), &tlv_request);
+    logRequest(ulog, getpid(), &tlv_request);
 
     if(openServerFIFO() != 0){
         reply->length = sizeof(op_type_t) + sizeof(ret_code_t);
         reply->type = op_type;
         reply->value.header.ret_code = RC_SRV_DOWN;
         
-        logReply(STDOUT_FILENO, getpid(), reply);
-        
+        logReply(ulog, getpid(), reply);
+
         return -1;
     }
 
@@ -222,34 +229,37 @@ int main(int argc, char *argv[]){
 
     int counter = 0;
 
-    while(counter < FIFO_TIMEOUT_SECS){
-        if(read(user_fifo_fd, reply, sizeof(tlv_reply_t)) > 0){
-            break;
+    while(!(read(user_fifo_fd, reply, sizeof(tlv_reply_t)) > 0)){
+        
+        if(!(counter < FIFO_TIMEOUT_SECS)){
+            reply->length = sizeof(op_type_t) + sizeof(ret_code_t);
+            reply->type = op_type;
+            reply->value.header.ret_code = RC_SRV_TIMEOUT;
+            
+            logReply(ulog, getpid(), reply);
+
+            free(reply);
+
+            close(ulog);
+
+            close(user_fifo_fd);
+
+            unlink(user_fifo);
+
+            umask(old_mask);
+
+            return 1;
         }
 
         sleep(1);
         counter++;
     }
-
-    if(counter >= FIFO_TIMEOUT_SECS){
-        reply->length = sizeof(op_type_t) + sizeof(ret_code_t);
-        reply->type = op_type;
-        reply->value.header.ret_code = RC_SRV_TIMEOUT;
-        
-        logReply(STDOUT_FILENO, getpid(), reply);
-
-        close(user_fifo_fd);
-
-        unlink(user_fifo);
-
-        umask(old_mask);
-
-        return 1;
-    }
     
-    logReply(STDOUT_FILENO, getpid(), reply);
+    logReply(ulog, getpid(), reply);
 
     free(reply);
+
+    close(ulog);
     
     close(user_fifo_fd);
 
