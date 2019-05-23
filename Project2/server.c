@@ -583,7 +583,7 @@ int main(int argc, char *argv[]){
             sem_getvalue(&sem,&val);
             logSyncMechSem(slog, MAIN_THREAD_ID, SYNC_OP_SEM_POST, SYNC_ROLE_PRODUCER, request.value.header.pid, val);
             
-            if(request.type == OP_SHUTDOWN){
+            if(request.type == OP_SHUTDOWN && request.value.header.account_id == 0){
                 logSyncMech(slog, MAIN_THREAD_ID, SYNC_OP_MUTEX_LOCK, SYNC_ROLE_PRODUCER, 0);
                 pthread_mutex_lock(&mut);  
                 
